@@ -5,5 +5,5 @@ train: ../pet_faces/train.txt
 val: ../pet_faces/val.txt
 test: ../pet_faces/test.txt
 
-nc: 1
-names: ['face']
+nc: 2
+names: ['cat', 'dog']
