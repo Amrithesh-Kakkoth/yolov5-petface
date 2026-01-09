@@ -1,0 +1,31 @@
+lr0: 0.01
+lrf: 0.1
+momentum: 0.937
+weight_decay: 0.0005
+warmup_epochs: 3.0
+hsv_h: 0.015
+hsv_s: 0.7
+hsv_v: 0.4
+warmup_momentum: 0.8
+warmup_bias_lr: 0.1
+obj_pw: 1.0
+cls_pw: 1.0
+fl_gamma: 0.0
+box: 0.05
+cls: 0.3
+landmark: 2.0   # scale landmark loss
+obj: 0.7
+label_smoothing: 0.0
+mosaic: 0.8
+mixup: 0.05
+copy_paste: 0.0
+degrees: 0.0
+translate: 0.1
+scale: 0.8
+shear: 0.0
+perspective: 0.0005
+flipud: 0.0   # disable up-down flipping
+fliplr: 0.5
+crop: 0.3
+blur: 0.05
+anchor_t: 4.0

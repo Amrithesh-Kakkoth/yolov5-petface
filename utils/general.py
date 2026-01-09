@@ -170,7 +170,7 @@ def labels_to_class_weights(labels, nc=80):
         return torch.Tensor()
 
     labels = np.concatenate(labels, 0)  # labels.shape = (866643, 5) for COCO
-    classes = labels[:, 0].astype(np.int)  # labels = [class xywh]
+    classes = labels[:, 0].astype(int)  # labels = [class xywh]
     weights = np.bincount(classes, minlength=nc)  # occurrences per class
 
     # Prepend gridpoint count (for uCE training)
@@ -179,13 +179,14 @@ def labels_to_class_weights(labels, nc=80):
 
     weights[weights == 0] = 1  # replace empty bins with 1
     weights = 1 / weights  # number of targets per class
+    weights = weights.astype(np.float32)
     weights /= weights.sum()  # normalize
     return torch.from_numpy(weights)
 
 
 def labels_to_image_weights(labels, nc=80, class_weights=np.ones(80)):
     # Produces image weights based on class_weights and image contents
-    class_counts = np.array([np.bincount(x[:, 0].astype(np.int), minlength=nc) for x in labels])
+    class_counts = np.array([np.bincount(x[:, 0].astype(int), minlength=nc) for x in labels])
     image_weights = (class_weights.reshape(1, nc) * class_counts).sum(1)
     # index = random.choices(range(n), weights=image_weights, k=1)  # weight image sample
     return image_weights
@@ -382,7 +383,9 @@ def non_max_suppression_face(prediction, conf_thres=0.25, iou_thres=0.45, classe
          detections with shape: nx6 (x1, y1, x2, y2, conf, cls)
     """
 
-    nc = prediction.shape[2] - 15  # number of classes
+    lmk_dims = 6  # 3 landmarks (x,y)
+    cls_start = 5 + lmk_dims
+    nc = prediction.shape[2] - cls_start  # number of classes
     xc = prediction[..., 4] > conf_thres  # candidates
 
     # Settings
@@ -393,7 +396,7 @@ def non_max_suppression_face(prediction, conf_thres=0.25, iou_thres=0.45, classe
     merge = False  # use merge-NMS
 
     t = time.time()
-    output = [torch.zeros((0, 16), device=prediction.device)] * prediction.shape[0]
+    output = [torch.zeros((0, cls_start + 1), device=prediction.device)] * prediction.shape[0]
     for xi, x in enumerate(prediction):  # image index, image inference
         # Apply constraints
         # x[((x[..., 2:4] < min_wh) | (x[..., 2:4] > max_wh)).any(1), 4] = 0  # width-height
@@ -402,10 +405,10 @@ def non_max_suppression_face(prediction, conf_thres=0.25, iou_thres=0.45, classe
         # Cat apriori labels if autolabelling
         if labels and len(labels[xi]):
             l = labels[xi]
-            v = torch.zeros((len(l), nc + 15), device=x.device)
+            v = torch.zeros((len(l), nc + cls_start), device=x.device)
             v[:, :4] = l[:, 1:5]  # box
             v[:, 4] = 1.0  # conf
-            v[range(len(l)), l[:, 0].long() + 15] = 1.0  # cls
+            v[range(len(l)), l[:, 0].long() + cls_start] = 1.0  # cls
             x = torch.cat((x, v), 0)
 
         # If none remain process next image
@@ -413,22 +416,22 @@ def non_max_suppression_face(prediction, conf_thres=0.25, iou_thres=0.45, classe
             continue
 
         # Compute conf
-        x[:, 15:] *= x[:, 4:5]  # conf = obj_conf * cls_conf
+        x[:, cls_start:] *= x[:, 4:5]  # conf = obj_conf * cls_conf
 
         # Box (center x, center y, width, height) to (x1, y1, x2, y2)
         box = xywh2xyxy(x[:, :4])
 
         # Detections matrix nx6 (xyxy, conf, landmarks, cls)
         if multi_label:
-            i, j = (x[:, 15:] > conf_thres).nonzero(as_tuple=False).T
-            x = torch.cat((box[i], x[i, j + 15, None], x[i, 5:15] ,j[:, None].float()), 1)
+            i, j = (x[:, cls_start:] > conf_thres).nonzero(as_tuple=False).T
+            x = torch.cat((box[i], x[i, j + cls_start, None], x[i, 5:cls_start] ,j[:, None].float()), 1)
         else:  # best class only
-            conf, j = x[:, 15:].max(1, keepdim=True)
-            x = torch.cat((box, conf, x[:, 5:15], j.float()), 1)[conf.view(-1) > conf_thres]
+            conf, j = x[:, cls_start:].max(1, keepdim=True)
+            x = torch.cat((box, conf, x[:, 5:cls_start], j.float()), 1)[conf.view(-1) > conf_thres]
 
         # Filter by class
         if classes is not None:
-            x = x[(x[:, 5:6] == torch.tensor(classes, device=x.device)).any(1)]
+            x = x[(x[:, -1:] == torch.tensor(classes, device=x.device)).any(1)]
 
         # If none remain process next image
         n = x.shape[0]  # number of boxes
@@ -436,7 +439,7 @@ def non_max_suppression_face(prediction, conf_thres=0.25, iou_thres=0.45, classe
             continue
 
         # Batched NMS
-        c = x[:, 15:16] * (0 if agnostic else max_wh)  # classes
+        c = x[:, -1:] * (0 if agnostic else max_wh)  # classes
         boxes, scores = x[:, :4] + c, x[:, 4]  # boxes (offset by class), scores
         i = torchvision.ops.nms(boxes, scores, iou_thres)  # NMS
         #if i.shape[0] > max_det:  # limit detections

@@ -1,0 +1,9 @@
+# Local pet faces dataset
+
+# Paths to image lists
+train: ../pet_faces/train.txt
+val: ../pet_faces/val.txt
+test: ../pet_faces/test.txt
+
+nc: 1
+names: ['face']

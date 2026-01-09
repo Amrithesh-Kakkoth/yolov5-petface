@@ -147,7 +147,7 @@ class LoadFaceImagesAndLabels(Dataset):  # for training/testing
         self.label_files = img2label_paths(self.img_files)  # labels
         cache_path = Path(self.label_files[0]).parent.with_suffix('.cache')  # cached labels
         if cache_path.is_file():
-            cache = torch.load(cache_path)  # load
+            cache = torch.load(cache_path, weights_only=False)  # load
             if cache['hash'] != get_hash(self.label_files + self.img_files) or 'results' not in cache:  # changed
                 cache = self.cache_labels(cache_path)  # re-cache
         else:
@@ -171,7 +171,7 @@ class LoadFaceImagesAndLabels(Dataset):  # for training/testing
                 x[:, 0] = 0
 
         n = len(shapes)  # number of images
-        bi = np.floor(np.arange(n) / batch_size).astype(np.int)  # batch index
+        bi = np.floor(np.arange(n) / batch_size).astype(int)  # batch index
         nb = bi[-1] + 1  # number of batches
         self.batch = bi  # batch index of image
         self.n = n
@@ -199,7 +199,7 @@ class LoadFaceImagesAndLabels(Dataset):  # for training/testing
                 elif mini > 1:
                     shapes[i] = [1, 1 / mini]
 
-            self.batch_shapes = np.ceil(np.array(shapes) * img_size / stride + pad).astype(np.int) * stride
+            self.batch_shapes = np.ceil(np.array(shapes) * img_size / stride + pad).astype(int) * stride
 
         # Cache images into memory for faster training (WARNING: large datasets may exceed system RAM)
         self.imgs = [None] * n
@@ -230,18 +230,30 @@ class LoadFaceImagesAndLabels(Dataset):  # for training/testing
                 if os.path.isfile(lb_file):
                     nf += 1  # label found
                     with open(lb_file, 'r') as f:
-                        l = np.array([x.split() for x in f.read().strip().splitlines()], dtype=np.float32)  # labels
+                        l_raw = [x.split() for x in f.read().strip().splitlines()]
+                        l = np.array(l_raw, dtype=np.float32) if len(l_raw) else np.zeros((0, 0), dtype=np.float32)
                     if len(l):
-                        assert l.shape[1] == 15, 'labels require 15 columns each'
+                        # support 11-column (3-landmark) labels or 14-column (with visibility per point)
+                        if l.shape[1] == 14:
+                            l_new = np.zeros((l.shape[0], 11), dtype=np.float32)
+                            l_new[:, :5] = l[:, :5]
+                            for j in range(3):
+                                x = l[:, 5 + 3 * j]
+                                y = l[:, 6 + 3 * j]
+                                v = l[:, 7 + 3 * j]
+                                l_new[:, 5 + 2 * j] = np.where(v > 0, x, -1)
+                                l_new[:, 6 + 2 * j] = np.where(v > 0, y, -1)
+                            l = l_new
+                        assert l.shape[1] == 11, 'labels require 11 columns each (cls, xywh, 3 landmarks)'
                         assert (l >= -1).all(), 'negative labels'
                         assert (l[:, 1:] <= 1).all(), 'non-normalized or out of bounds coordinate labels'
                         assert np.unique(l, axis=0).shape[0] == l.shape[0], 'duplicate labels'
                     else:
                         ne += 1  # label empty
-                        l = np.zeros((0, 15), dtype=np.float32)
+                        l = np.zeros((0, 11), dtype=np.float32)
                 else:
                     nm += 1  # label missing
-                    l = np.zeros((0, 15), dtype=np.float32)
+                    l = np.zeros((0, 11), dtype=np.float32)
                 x[im_file] = [l, shape]
             except Exception as e:
                 nc += 1
@@ -314,18 +326,10 @@ class LoadFaceImagesAndLabels(Dataset):  # for training/testing
                     np.array(x[:, 7] > 0, dtype=np.int32) - 1)
                 labels[:, 8] = np.array(x[:, 8] > 0, dtype=np.int32) * (ratio[1] * h * x[:, 8] + pad[1]) + (
                     np.array(x[:, 8] > 0, dtype=np.int32) - 1)
-                labels[:, 9] = np.array(x[:, 5] > 0, dtype=np.int32) * (ratio[0] * w * x[:, 9] + pad[0]) + (
+                labels[:, 9] = np.array(x[:, 9] > 0, dtype=np.int32) * (ratio[0] * w * x[:, 9] + pad[0]) + (
                     np.array(x[:, 9] > 0, dtype=np.int32) - 1)
-                labels[:, 10] = np.array(x[:, 5] > 0, dtype=np.int32) * (ratio[1] * h * x[:, 10] + pad[1]) + (
+                labels[:, 10] = np.array(x[:, 10] > 0, dtype=np.int32) * (ratio[1] * h * x[:, 10] + pad[1]) + (
                     np.array(x[:, 10] > 0, dtype=np.int32) - 1)
-                labels[:, 11] = np.array(x[:, 11] > 0, dtype=np.int32) * (ratio[0] * w * x[:, 11] + pad[0]) + (
-                    np.array(x[:, 11] > 0, dtype=np.int32) - 1)
-                labels[:, 12] = np.array(x[:, 12] > 0, dtype=np.int32) * (ratio[1] * h * x[:, 12] + pad[1]) + (
-                    np.array(x[:, 12] > 0, dtype=np.int32) - 1)
-                labels[:, 13] = np.array(x[:, 13] > 0, dtype=np.int32) * (ratio[0] * w * x[:, 13] + pad[0]) + (
-                    np.array(x[:, 13] > 0, dtype=np.int32) - 1)
-                labels[:, 14] = np.array(x[:, 14] > 0, dtype=np.int32) * (ratio[1] * h * x[:, 14] + pad[1]) + (
-                    np.array(x[:, 14] > 0, dtype=np.int32) - 1)
 
         if self.augment:
             # Augment imagespace
@@ -350,10 +354,10 @@ class LoadFaceImagesAndLabels(Dataset):  # for training/testing
             labels[:, [2, 4]] /= img.shape[0]  # normalized height 0-1
             labels[:, [1, 3]] /= img.shape[1]  # normalized width 0-1
 
-            labels[:, [5, 7, 9, 11, 13]] /= img.shape[1]  # normalized landmark x 0-1
-            labels[:, [5, 7, 9, 11, 13]] = np.where(labels[:, [5, 7, 9, 11, 13]] < 0, -1, labels[:, [5, 7, 9, 11, 13]])
-            labels[:, [6, 8, 10, 12, 14]] /= img.shape[0]  # normalized landmark y 0-1
-            labels[:, [6, 8, 10, 12, 14]] = np.where(labels[:, [6, 8, 10, 12, 14]] < 0, -1, labels[:, [6, 8, 10, 12, 14]])
+            labels[:, [5, 7, 9]] /= img.shape[1]  # normalized landmark x 0-1
+            labels[:, [5, 7, 9]] = np.where(labels[:, [5, 7, 9]] < 0, -1, labels[:, [5, 7, 9]])
+            labels[:, [6, 8, 10]] /= img.shape[0]  # normalized landmark y 0-1
+            labels[:, [6, 8, 10]] = np.where(labels[:, [6, 8, 10]] < 0, -1, labels[:, [6, 8, 10]])
 
         if self.augment:
             # flip up-down
@@ -365,8 +369,6 @@ class LoadFaceImagesAndLabels(Dataset):  # for training/testing
                     labels[:, 6] = np.where(labels[:,6] < 0, -1, 1 - labels[:, 6])
                     labels[:, 8] = np.where(labels[:, 8] < 0, -1, 1 - labels[:, 8])
                     labels[:, 10] = np.where(labels[:, 10] < 0, -1, 1 - labels[:, 10])
-                    labels[:, 12] = np.where(labels[:, 12] < 0, -1, 1 - labels[:, 12])
-                    labels[:, 14] = np.where(labels[:, 14] < 0, -1, 1 - labels[:, 14])
 
             # flip left-right
             if random.random() < hyp['fliplr']:
@@ -377,18 +379,13 @@ class LoadFaceImagesAndLabels(Dataset):  # for training/testing
                     labels[:, 5] = np.where(labels[:, 5] < 0, -1, 1 - labels[:, 5])
                     labels[:, 7] = np.where(labels[:, 7] < 0, -1, 1 - labels[:, 7])
                     labels[:, 9] = np.where(labels[:, 9] < 0, -1, 1 - labels[:, 9])
-                    labels[:, 11] = np.where(labels[:, 11] < 0, -1, 1 - labels[:, 11])
-                    labels[:, 13] = np.where(labels[:, 13] < 0, -1, 1 - labels[:, 13])
 
-                    #左右镜像的时候，左眼、右眼，　左嘴角、右嘴角无法区分, 应该交换位置，便于网络学习
+                    # swap left/right eyes on horizontal flip
                     eye_left = np.copy(labels[:, [5, 6]])
-                    mouth_left = np.copy(labels[:, [11, 12]])
                     labels[:, [5, 6]] = labels[:, [7, 8]]
                     labels[:, [7, 8]] = eye_left
-                    labels[:, [11, 12]] = labels[:, [13, 14]]
-                    labels[:, [13, 14]] = mouth_left
 
-        labels_out = torch.zeros((nL, 16))
+        labels_out = torch.zeros((nL, 12))
         if nL:
             labels_out[:, 1:] = torch.from_numpy(labels)
             #showlabels(img, labels[:, 1:5], labels[:, 5:15])
@@ -417,7 +414,7 @@ def showlabels(img, boxs, landmarks):
 
     for landmark in landmarks:
         #cv2.circle(img,(60,60),30,(0,0,255))
-        for i in range(5):
+        for i in range(3):
             cv2.circle(img, (int(landmark[2*i] * img.shape[1]), int(landmark[2*i+1]*img.shape[0])), 3 ,(0,0,255), -1)
     cv2.imshow('test', img)
     cv2.waitKey(0)
@@ -461,18 +458,13 @@ def load_mosaic_face(self, index):
             labels[:, 2] = h * (x[:, 2] - x[:, 4] / 2) + padh
             labels[:, 3] = w * (x[:, 1] + x[:, 3] / 2) + padw
             labels[:, 4] = h * (x[:, 2] + x[:, 4] / 2) + padh
-            #10 landmarks
-
+            #3 landmarks
             labels[:, 5] = np.array(x[:, 5] > 0, dtype=np.int32) * (w * x[:, 5] + padw) + (np.array(x[:, 5] > 0, dtype=np.int32) - 1)
             labels[:, 6] = np.array(x[:, 6] > 0, dtype=np.int32) * (h * x[:, 6] + padh) + (np.array(x[:, 6] > 0, dtype=np.int32) - 1)
             labels[:, 7] = np.array(x[:, 7] > 0, dtype=np.int32) * (w * x[:, 7] + padw) + (np.array(x[:, 7] > 0, dtype=np.int32) - 1)
             labels[:, 8] = np.array(x[:, 8] > 0, dtype=np.int32) * (h * x[:, 8] + padh) + (np.array(x[:, 8] > 0, dtype=np.int32) - 1)
             labels[:, 9] = np.array(x[:, 9] > 0, dtype=np.int32) * (w * x[:, 9] + padw) + (np.array(x[:, 9] > 0, dtype=np.int32) - 1)
             labels[:, 10] = np.array(x[:, 10] > 0, dtype=np.int32) * (h * x[:, 10] + padh) + (np.array(x[:, 10] > 0, dtype=np.int32) - 1)
-            labels[:, 11] = np.array(x[:, 11] > 0, dtype=np.int32) * (w * x[:, 11] + padw) + (np.array(x[:, 11] > 0, dtype=np.int32) - 1)
-            labels[:, 12] = np.array(x[:, 12] > 0, dtype=np.int32) * (h * x[:, 12] + padh) + (np.array(x[:, 12] > 0, dtype=np.int32) - 1)
-            labels[:, 13] = np.array(x[:, 13] > 0, dtype=np.int32) * (w * x[:, 13] + padw) + (np.array(x[:, 13] > 0, dtype=np.int32) - 1)
-            labels[:, 14] = np.array(x[:, 14] > 0, dtype=np.int32) * (h * x[:, 14] + padh) + (np.array(x[:, 14] > 0, dtype=np.int32) - 1)
         labels4.append(labels)
 
     # Concat/clip labels
@@ -493,12 +485,6 @@ def load_mosaic_face(self, index):
 
         labels4[:, 9] = np.where(labels4[:, 10] == -1, -1, labels4[:, 9])
         labels4[:, 10] = np.where(labels4[:, 9] == -1, -1, labels4[:, 10])
-
-        labels4[:, 11] = np.where(labels4[:, 12] == -1, -1, labels4[:, 11])
-        labels4[:, 12] = np.where(labels4[:, 11] == -1, -1, labels4[:, 12])
-
-        labels4[:, 13] = np.where(labels4[:, 14] == -1, -1, labels4[:, 13])
-        labels4[:, 14] = np.where(labels4[:, 13] == -1, -1, labels4[:, 14])
 
     # Augment
     img4, labels4 = random_perspective(img4, labels4,
@@ -649,28 +635,27 @@ def random_perspective(img, targets=(), degrees=10, translate=.1, scale=.1, shea
     # Transform label coordinates
     n = len(targets)
     if n:
-        # warp points
-        #xy = np.ones((n * 4, 3))
-        xy = np.ones((n * 9, 3))
-        xy[:, :2] = targets[:, [1, 2, 3, 4, 1, 4, 3, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]].reshape(n * 9, 2)  # x1y1, x2y2, x1y2, x2y1
+        # warp points (4 bbox corners + 3 landmarks = 7 points)
+        xy = np.ones((n * 7, 3))
+        xy[:, :2] = targets[:, [1, 2, 3, 4, 1, 4, 3, 2, 5, 6, 7, 8, 9, 10]].reshape(n * 7, 2)  # x1y1, x2y2, x1y2, x2y1, kpts
         xy = xy @ M.T  # transform
         if perspective:
-            xy = (xy[:, :2] / xy[:, 2:3]).reshape(n, 18)  # rescale
+            xy = (xy[:, :2] / xy[:, 2:3]).reshape(n, 14)  # rescale
         else:  # affine
-            xy = xy[:, :2].reshape(n, 18)
+            xy = xy[:, :2].reshape(n, 14)
 
         # create new boxes
         x = xy[:, [0, 2, 4, 6]]
         y = xy[:, [1, 3, 5, 7]]
 
-        landmarks = xy[:, [8, 9, 10, 11, 12, 13, 14, 15, 16, 17]]
+        landmarks = xy[:, [8, 9, 10, 11, 12, 13]]
         mask = np.array(targets[:, 5:] > 0, dtype=np.int32)
         landmarks = landmarks * mask
         landmarks = landmarks + mask - 1
 
         landmarks = np.where(landmarks < 0, -1, landmarks)
-        landmarks[:, [0, 2, 4, 6, 8]] = np.where(landmarks[:, [0, 2, 4, 6, 8]] > width, -1, landmarks[:, [0, 2, 4, 6, 8]])
-        landmarks[:, [1, 3, 5, 7, 9]] = np.where(landmarks[:, [1, 3, 5, 7, 9]] > height, -1,landmarks[:, [1, 3, 5, 7, 9]])
+        landmarks[:, [0, 2, 4]] = np.where(landmarks[:, [0, 2, 4]] > width, -1, landmarks[:, [0, 2, 4]])
+        landmarks[:, [1, 3, 5]] = np.where(landmarks[:, [1, 3, 5]] > height, -1,landmarks[:, [1, 3, 5]])
 
         landmarks[:, 0] = np.where(landmarks[:, 1] == -1, -1, landmarks[:, 0])
         landmarks[:, 1] = np.where(landmarks[:, 0] == -1, -1, landmarks[:, 1])
@@ -680,12 +665,6 @@ def random_perspective(img, targets=(), degrees=10, translate=.1, scale=.1, shea
 
         landmarks[:, 4] = np.where(landmarks[:, 5] == -1, -1, landmarks[:, 4])
         landmarks[:, 5] = np.where(landmarks[:, 4] == -1, -1, landmarks[:, 5])
-
-        landmarks[:, 6] = np.where(landmarks[:, 7] == -1, -1, landmarks[:, 6])
-        landmarks[:, 7] = np.where(landmarks[:, 6] == -1, -1, landmarks[:, 7])
-
-        landmarks[:, 8] = np.where(landmarks[:, 9] == -1, -1, landmarks[:, 8])
-        landmarks[:, 9] = np.where(landmarks[:, 8] == -1, -1, landmarks[:, 9])
 
         targets[:,5:] = landmarks
 
@@ -809,7 +788,7 @@ def extract_boxes(path='../coco128/'):  # from utils.datasets import *; extract_
                     b = x[1:] * [w, h, w, h]  # box
                     # b[2:] = b[2:].max()  # rectangle to square
                     b[2:] = b[2:] * 1.2 + 3  # pad
-                    b = xywh2xyxy(b.reshape(-1, 4)).ravel().astype(np.int)
+                    b = xywh2xyxy(b.reshape(-1, 4)).ravel().astype(int)
 
                     b[[0, 2]] = np.clip(b[[0, 2]], 0, w)  # clip boxes outside of image
                     b[[1, 3]] = np.clip(b[[1, 3]], 0, h)

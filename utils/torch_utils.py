@@ -52,16 +52,26 @@ def git_describe():
 
 
 def select_device(device='', batch_size=None):
-    # device = 'cpu' or '0' or '0,1,2,3'
+    # device = 'cpu' or 'mps' or '0' or '0,1,2,3'
     s = f'YOLOv5 {git_describe()} torch {torch.__version__} '  # string
-    cpu = device.lower() == 'cpu'
+    device = device.lower()
+    cpu = device == 'cpu'
+    mps_req = device == 'mps'
+
     if cpu:
         os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # force torch.cuda.is_available() = False
-    elif device:  # non-cpu device requested
+    elif mps_req:
+        # When targeting Apple silicon, disable CUDA entirely to avoid accidental GPU selection
+        os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+    elif not mps_req and device:  # non-cpu device requested (CUDA indices)
         os.environ['CUDA_VISIBLE_DEVICES'] = device  # set environment variable
         assert torch.cuda.is_available(), f'CUDA unavailable, invalid device {device} requested'  # check availability
 
-    cuda = not cpu and torch.cuda.is_available()
+    cuda = (not cpu and not mps_req) and torch.cuda.is_available()
+    mps_available = False
+    if not cuda and not cpu:
+        mps_available = torch.backends.mps.is_available() and torch.backends.mps.is_built()
+
     if cuda:
         n = torch.cuda.device_count()
         if n > 1 and batch_size:  # check that batch_size is compatible with device_count
@@ -70,17 +80,24 @@ def select_device(device='', batch_size=None):
         for i, d in enumerate(device.split(',') if device else range(n)):
             p = torch.cuda.get_device_properties(i)
             s += f"{'' if i == 0 else space}CUDA:{d} ({p.name}, {p.total_memory / 1024 ** 2}MB)\n"  # bytes to MB
+        dev = torch.device('cuda:0')
+    elif mps_available:
+        s += 'MPS\n'
+        dev = torch.device('mps')
     else:
         s += 'CPU\n'
+        dev = torch.device('cpu')
 
     logger.info(s)  # skip a line
-    return torch.device('cuda:0' if cuda else 'cpu')
+    return dev
 
 
 def time_synchronized():
     # pytorch-accurate time
     if torch.cuda.is_available():
         torch.cuda.synchronize()
+    elif torch.backends.mps.is_available():
+        torch.mps.synchronize()
     return time.time()
 
 

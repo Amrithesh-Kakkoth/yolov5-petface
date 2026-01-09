@@ -1,6 +1,7 @@
 # This file contains modules common to various models
 
 import math
+import warnings
 
 import numpy as np
 import requests
@@ -253,6 +254,19 @@ class SPPF(nn.Module):
             y1 = self.m(x)
             y2 = self.m(y1)
             return self.cv2(torch.cat((x, y1, y2, self.m(y2)), 1))
+
+class SPPFSmall(nn.Module):
+    # SPPF variant with smaller pooling kernels (7,5,3) for faces
+    def __init__(self, c1, c2, k=(7, 5, 3)):
+        super().__init__()
+        c_ = c1 // 2
+        self.cv1 = Conv(c1, c_, 1, 1)
+        self.m = nn.ModuleList([nn.MaxPool2d(kernel_size=x, stride=1, padding=x // 2) for x in k])
+        self.cv2 = Conv(c_ * (len(k) + 1), c2, 1, 1)
+
+    def forward(self, x):
+        x = self.cv1(x)
+        return self.cv2(torch.cat([x] + [m(x) for m in self.m], 1))
 
 
 class Focus(nn.Module):

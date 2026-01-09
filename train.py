@@ -9,6 +9,7 @@ from threading import Thread
 from warnings import warn
 
 import numpy as np
+import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
@@ -16,7 +17,7 @@ import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 import torch.utils.data
 import yaml
-from torch.cuda import amp
+from torch import amp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -63,7 +64,10 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
 
     # Configure
     plots = not opt.evolve  # create plots
-    cuda = device.type != 'cpu'
+    device_type = device.type
+    is_cuda = device_type == 'cuda'
+    is_mps = device_type == 'mps'
+    cuda = is_cuda
     init_seeds(2 + rank)
     with open(opt.data) as f:
         data_dict = yaml.load(f, Loader=yaml.FullLoader)  # data dict
@@ -228,7 +232,7 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
     maps = np.zeros(nc)  # mAP per class
     results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
     scheduler.last_epoch = start_epoch - 1  # do not move
-    scaler = amp.GradScaler(enabled=cuda)
+    scaler = amp.GradScaler(enabled=is_cuda or is_mps)
     logger.info('Image sizes %g train, %g test\n'
                 'Using %g dataloader workers\nLogging results to %s\n'
                 'Starting training for %g epochs...' % (imgsz, imgsz_test, dataloader.num_workers, save_dir, epochs))
@@ -285,7 +289,7 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
                     imgs = F.interpolate(imgs, size=ns, mode='bilinear', align_corners=False)
 
             # Forward
-            with amp.autocast(enabled=cuda):
+            with torch.autocast(device_type=device_type, enabled=is_cuda or is_mps):
                 pred = model(imgs)  # forward
                 loss, loss_items = compute_loss(pred, targets.to(device), model)  # loss scaled by batch_size
                 if rank != -1:
@@ -305,7 +309,14 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
             # Print
             if rank in [-1, 0]:
                 mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
-                mem = '%.3gG' % (torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0)  # (GB)
+                if torch.cuda.is_available():
+                    mem_bytes = torch.cuda.memory_reserved()
+                elif hasattr(torch, 'mps') and torch.backends.mps.is_available():
+                    # MPS does not expose CUDA metrics; prefer driver_allocated_memory when present
+                    mem_bytes = getattr(torch.mps, 'driver_allocated_memory', lambda: 0)()
+                else:
+                    mem_bytes = 0
+                mem = f'{mem_bytes / 1E9:.3g}G'
                 s = ('%10s' * 2 + '%10.4g' * 7) % (
                     '%g/%g' % (epoch, epochs - 1), mem, *mloss, targets.shape[0], imgs.shape[-1])
                 pbar.set_description(s)
@@ -368,7 +379,8 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
 
             # Save model
             save = (not opt.nosave) or (final_epoch and not opt.evolve)
-            if save:
+            should_save_period = opt.save_period and (epoch + 1) % opt.save_period == 0
+            if save and (should_save_period or final_epoch):
                 with open(results_file, 'r') as f:  # create checkpoint
                     ckpt = {'epoch': epoch,
                             'best_fitness': best_fitness,
@@ -424,13 +436,16 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
         dist.destroy_process_group()
 
     wandb.run.finish() if wandb and wandb.run else None
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    elif hasattr(torch, 'mps') and torch.backends.mps.is_available():
+        torch.mps.empty_cache()
     return results
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--weights', type=str, default='weights/yolov5s.pt', help='initial weights path')
+    parser.add_argument('--weights', type=str, default='', help='initial weights path (empty to train from scratch)')
     parser.add_argument('--cfg', type=str, default='models/yolov5s.yaml', help='model.yaml path')
     parser.add_argument('--data', type=str, default='data/widerface.yaml', help='data.yaml path')
     parser.add_argument('--hyp', type=str, default='data/hyp.scratch.yaml', help='hyperparameters path')
@@ -443,10 +458,11 @@ if __name__ == '__main__':
     parser.add_argument('--notest', action='store_true', help='only test final epoch')
     parser.add_argument('--noautoanchor', action='store_true', help='disable autoanchor check')
     parser.add_argument('--evolve', action='store_true', help='evolve hyperparameters')
+    parser.add_argument('--save-period', type=int, default=1, help='checkpoint save period (epochs, 0 = only last/best)')
     parser.add_argument('--bucket', type=str, default='', help='gsutil bucket')
     parser.add_argument('--cache-images', action='store_true', help='cache images for faster training')
     parser.add_argument('--image-weights', action='store_true', help='use weighted image selection for training')
-    parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
+    parser.add_argument('--device', default='mps', help='compute device: mps (default) or cpu')
     parser.add_argument('--multi-scale', action='store_true', default=False, help='vary img-size +/- 50%%')
     parser.add_argument('--single-cls', action='store_true', help='train multi-class data as single-class')
     parser.add_argument('--adam', action='store_true', help='use torch.optim.Adam() optimizer')
@@ -486,13 +502,22 @@ if __name__ == '__main__':
 
     # DDP mode
     device = select_device(opt.device, batch_size=opt.batch_size)
+    device_type = device.type
+    is_cuda = device_type == 'cuda'
+    is_mps = device_type == 'mps'
     if opt.local_rank != -1:
         assert torch.cuda.device_count() > opt.local_rank
         torch.cuda.set_device(opt.local_rank)
         device = torch.device('cuda', opt.local_rank)
+        device_type = device.type
         dist.init_process_group(backend='nccl', init_method='env://')  # distributed backend
         assert opt.batch_size % opt.world_size == 0, '--batch-size must be multiple of CUDA device count'
         opt.batch_size = opt.total_batch_size // opt.world_size
+        is_cuda = True
+        is_mps = False
+        cuda = is_cuda
+    else:
+        cuda = is_cuda
 
     # Hyperparameters
     with open(opt.hyp) as f:

@@ -1,0 +1,51 @@
+# parameters
+nc: 1  # number of classes
+depth_multiple: 0.67
+width_multiple: 0.50
+
+# anchors (P3/8, P4/16, P5/32, P6/64)
+anchors:
+  - [102,104, 150,153, 192,189]
+  - [221,237, 283,243, 274,305]
+  - [357,308, 346,389, 456,384]
+  - [425,478, 545,481, 586,617]
+
+# YOLOv5 face backbone (Stem instead of Focus, smaller SPPF)
+backbone:
+  [[-1, 1, StemBlock, [64, 3, 2]],   # 0-P1/2
+   [-1, 1, Conv, [128, 3, 2]],       # 1-P2/4
+   [-1, 2, C3, [128]],
+   [-1, 1, Conv, [256, 3, 2]],       # 3-P3/8
+   [-1, 4, C3, [256]],
+   [-1, 1, Conv, [512, 3, 2]],       # 5-P4/16
+   [-1, 6, C3, [512]],
+   [-1, 1, Conv, [768, 3, 2]],       # 7-P5/32
+   [-1, 2, C3, [768]],
+   [-1, 1, SPPFSmall, [384, 384]],        # 9
+  ]
+
+# YOLOv5 face head with P6
+head:
+  [[-1, 1, Conv, [384, 1, 1]],
+   [-1, 1, nn.Upsample, [None, 2, 'nearest']],
+   [[-1, 6], 1, Concat, [1]],        # cat P4
+   [-1, 2, C3, [384, False]],        # 13
+
+   [-1, 1, Conv, [192, 1, 1]],
+   [-1, 1, nn.Upsample, [None, 2, 'nearest']],
+   [[-1, 4], 1, Concat, [1]],        # cat P3
+   [-1, 2, C3, [192, False]],        # 17 (P3/8)
+
+   [-1, 1, Conv, [192, 3, 2]],
+   [[-1, 13], 1, Concat, [1]],       # cat P4
+   [-1, 2, C3, [384, False]],        # 21 (P4/16)
+
+   [-1, 1, Conv, [384, 3, 2]],
+   [[-1, 9], 1, Concat, [1]],        # cat P5
+   [-1, 2, C3, [768, False]],        # 23 (P5/32)
+
+   [-1, 1, Conv, [768, 3, 2]],
+   [-1, 1, C3, [768, False]],        # 25 (P6/64)
+
+   [[17, 20, 23, 25], 1, Detect, [nc, anchors]],  # Detect(P3, P4, P5, P6)
+  ]
