@@ -59,8 +59,8 @@ def test(data,
         # if device.type != 'cpu' and torch.cuda.device_count() > 1:
         #     model = nn.DataParallel(model)
 
-    # Half
-    half = device.type != 'cpu'  # half precision only supported on CUDA
+        # Half
+        half = device.type != 'cpu'  # half precision only supported on CUDA
     if half:
         model.half()
 
@@ -86,7 +86,8 @@ def test(data,
         img = torch.zeros((1, 3, imgsz, imgsz), device=device)  # init img
         _ = model(img.half() if half else img) if device.type != 'cpu' else None  # run once
         path = data['test'] if opt.task == 'test' else data['val']  # path to val/test images
-        dataloader = create_dataloader(path, imgsz, batch_size, model.stride.max(), opt, pad=0.5, rect=True)[0]
+        dataloader = create_dataloader(path, imgsz, batch_size, model.stride.max(), opt, pad=0.5, rect=True,
+                                       workers=opt.workers)[0]
 
     seen = 0
     confusion_matrix = ConfusionMatrix(nc=nc)
@@ -301,6 +302,7 @@ if __name__ == '__main__':
     parser.add_argument('--project', default='runs/test', help='save to project/name')
     parser.add_argument('--name', default='exp', help='save to project/name')
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
+    parser.add_argument('--workers', type=int, default=0, help='maximum number of dataloader workers')
     opt = parser.parse_args()
     opt.save_json |= opt.data.endswith('coco.yaml')
     opt.data = check_file(opt.data)  # check file

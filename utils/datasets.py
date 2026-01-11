@@ -368,7 +368,8 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.label_files = img2label_paths(self.img_files)  # labels
         cache_path = Path(self.label_files[0]).parent.with_suffix('.cache')  # cached labels
         if cache_path.is_file():
-            cache = torch.load(cache_path)  # load
+            # Explicitly allow full load to keep compatibility with caches saved before torch.load default changed.
+            cache = torch.load(cache_path, weights_only=False)  # load
             if cache['hash'] != get_hash(self.label_files + self.img_files) or 'results' not in cache:  # changed
                 cache = self.cache_labels(cache_path, prefix)  # re-cache
         else:
@@ -519,6 +520,9 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
 
             labels = self.labels[index].copy()
+            # If labels include landmarks (more than 5 columns), drop extras for detection-only evaluation.
+            if labels.size and labels.shape[1] > 5:
+                labels = labels[:, :5]
             if labels.size:  # normalized xywh to pixel xyxy format
                 labels[:, 1:] = xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
 

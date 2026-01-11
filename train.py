@@ -84,7 +84,9 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
     if pretrained:
         with torch_distributed_zero_first(rank):
             attempt_download(weights)  # download if not found locally
-        ckpt = torch.load(weights, map_location=device)  # load checkpoint
+        # torch.load default changed to weights_only=True in PyTorch 2.6; explicitly
+        # allow full checkpoint loading for trusted local weights.
+        ckpt = torch.load(weights, map_location=device, weights_only=False)  # load checkpoint
         if hyp.get('anchors'):
             ckpt['model'].yaml['anchors'] = round(hyp['anchors'])  # force autoanchor
         model = Model(opt.cfg or ckpt['model'].yaml, ch=3, nc=nc).to(device)  # create
@@ -232,7 +234,8 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
     maps = np.zeros(nc)  # mAP per class
     results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
     scheduler.last_epoch = start_epoch - 1  # do not move
-    scaler = amp.GradScaler(enabled=is_cuda or is_mps)
+    # Disable AMP on CPU to avoid inplace grad issues encountered in finetune here.
+    scaler = amp.GradScaler(enabled=is_cuda or is_mps and device.type != 'cpu')
     logger.info('Image sizes %g train, %g test\n'
                 'Using %g dataloader workers\nLogging results to %s\n'
                 'Starting training for %g epochs...' % (imgsz, imgsz_test, dataloader.num_workers, save_dir, epochs))

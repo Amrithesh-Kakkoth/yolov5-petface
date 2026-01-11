@@ -55,7 +55,7 @@ def scale_coords_landmarks(img1_shape, coords, img0_shape, ratio_pad=None):
         coords[:, yi].clamp_(0, img0_shape[0])
     return coords
 
-def show_results(img, xyxy, conf, landmarks, class_num):
+def show_results(img, xyxy, conf, landmarks, class_num, names):
     h,w,c = img.shape
     tl = 1 or round(0.002 * (h + w) / 2) + 1  # line/font thickness
     x1 = int(xyxy[0])
@@ -66,16 +66,18 @@ def show_results(img, xyxy, conf, landmarks, class_num):
 
     cv2.rectangle(img, (x1,y1), (x2, y2), (0,255,0), thickness=tl, lineType=cv2.LINE_AA)
 
-    clors = [(255,0,0),(0,255,0),(0,0,255),(255,255,0),(0,255,255)]
-
-    num_landmark_pairs = len(landmarks) // 2
-    for i in range(num_landmark_pairs):
-        point_x = int(landmarks[2 * i])
-        point_y = int(landmarks[2 * i + 1])
-        cv2.circle(img, (point_x, point_y), tl+1, clors[i % len(clors)], -1)
+    # Draw landmarks if provided
+    if landmarks:
+        clors = [(255,0,0),(0,255,0),(0,0,255),(255,255,0),(0,255,255)]
+        num_landmark_pairs = len(landmarks) // 2
+        for i in range(num_landmark_pairs):
+            point_x = int(landmarks[2 * i])
+            point_y = int(landmarks[2 * i + 1])
+            cv2.circle(img, (point_x, point_y), tl+1, clors[i % len(clors)], -1)
 
     tf = max(tl - 1, 1)  # font thickness
-    label = str(conf)[:5]
+    cls_name = names[int(class_num)] if names else str(int(class_num))
+    label = f'{cls_name} {conf:.2f}'
     cv2.putText(img, label, (x1, y1 - 2), 0, tl / 3, [225, 255, 255], thickness=tf, lineType=cv2.LINE_AA)
     return img
 
@@ -92,8 +94,8 @@ def detect(
 ):
     # Load model
     img_size = 640
-    conf_thres = 0.6
-    iou_thres = 0.5
+    conf_thres = 0.25  # match eval
+    iou_thres = 0.6
     imgsz=(640, 640)
     
     # Directories
@@ -115,6 +117,8 @@ def detect(
         bs = 1  # batch_size
     vid_path, vid_writer = [None] * bs, [None] * bs
     
+    names = model.names if hasattr(model, 'names') else None
+
     for path, im, im0s, vid_cap in dataset:
         
         if len(im.shape) == 4:
@@ -177,8 +181,7 @@ def detect(
                     conf = det[j, 4].cpu().numpy()
                     landmarks = det[j, lm_slice].view(-1).tolist()
                     class_num = det[j, class_idx].cpu().numpy()
-                    
-                    im0 = show_results(im0, xyxy, conf, landmarks, class_num)
+                    im0 = show_results(im0, xyxy, conf, landmarks, class_num, names)
             
             if view_img:
                 cv2.imshow('result', im0)
