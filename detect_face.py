@@ -40,20 +40,19 @@ def scale_coords_landmarks(img1_shape, coords, img0_shape, ratio_pad=None):
         gain = ratio_pad[0][0]
         pad = ratio_pad[1]
 
-    coords[:, [0, 2, 4, 6, 8]] -= pad[0]  # x padding
-    coords[:, [1, 3, 5, 7, 9]] -= pad[1]  # y padding
-    coords[:, :10] /= gain
-    #clip_coords(coords, img0_shape)
-    coords[:, 0].clamp_(0, img0_shape[1])  # x1
-    coords[:, 1].clamp_(0, img0_shape[0])  # y1
-    coords[:, 2].clamp_(0, img0_shape[1])  # x2
-    coords[:, 3].clamp_(0, img0_shape[0])  # y2
-    coords[:, 4].clamp_(0, img0_shape[1])  # x3
-    coords[:, 5].clamp_(0, img0_shape[0])  # y3
-    coords[:, 6].clamp_(0, img0_shape[1])  # x4
-    coords[:, 7].clamp_(0, img0_shape[0])  # y4
-    coords[:, 8].clamp_(0, img0_shape[1])  # x5
-    coords[:, 9].clamp_(0, img0_shape[0])  # y5
+    num_landmark_pairs = coords.shape[1] // 2
+    x_idx = [2 * i for i in range(num_landmark_pairs)]
+    y_idx = [2 * i + 1 for i in range(num_landmark_pairs)]
+
+    coords[:, x_idx] -= pad[0]  # x padding
+    coords[:, y_idx] -= pad[1]  # y padding
+    coords[:, : 2 * num_landmark_pairs] /= gain
+
+    # Clip coordinates to image bounds
+    for xi in x_idx:
+        coords[:, xi].clamp_(0, img0_shape[1])
+    for yi in y_idx:
+        coords[:, yi].clamp_(0, img0_shape[0])
     return coords
 
 def show_results(img, xyxy, conf, landmarks, class_num):
@@ -64,15 +63,16 @@ def show_results(img, xyxy, conf, landmarks, class_num):
     x2 = int(xyxy[2])
     y2 = int(xyxy[3])
     img = img.copy()
-    
+
     cv2.rectangle(img, (x1,y1), (x2, y2), (0,255,0), thickness=tl, lineType=cv2.LINE_AA)
 
     clors = [(255,0,0),(0,255,0),(0,0,255),(255,255,0),(0,255,255)]
 
-    for i in range(5):
+    num_landmark_pairs = len(landmarks) // 2
+    for i in range(num_landmark_pairs):
         point_x = int(landmarks[2 * i])
         point_y = int(landmarks[2 * i + 1])
-        cv2.circle(img, (point_x, point_y), tl+1, clors[i], -1)
+        cv2.circle(img, (point_x, point_y), tl+1, clors[i % len(clors)], -1)
 
     tf = max(tl - 1, 1)  # font thickness
     label = str(conf)[:5]
@@ -163,18 +163,20 @@ def detect(
             if len(det):
                 # Rescale boxes from img_size to im0 size
                 det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
+                class_idx = det.shape[1] - 1
+                lm_slice = slice(5, class_idx)
 
                 # Print results
                 for c in det[:, -1].unique():
                     n = (det[:, -1] == c).sum()  # detections per class
 
-                det[:, 5:15] = scale_coords_landmarks(img.shape[2:], det[:, 5:15], im0.shape).round()
+                det[:, lm_slice] = scale_coords_landmarks(img.shape[2:], det[:, lm_slice], im0.shape).round()
 
                 for j in range(det.size()[0]):
                     xyxy = det[j, :4].view(-1).tolist()
                     conf = det[j, 4].cpu().numpy()
-                    landmarks = det[j, 5:15].view(-1).tolist()
-                    class_num = det[j, 15].cpu().numpy()
+                    landmarks = det[j, lm_slice].view(-1).tolist()
+                    class_num = det[j, class_idx].cpu().numpy()
                     
                     im0 = show_results(im0, xyxy, conf, landmarks, class_num)
             
